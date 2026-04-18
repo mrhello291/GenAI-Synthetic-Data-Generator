@@ -235,7 +235,7 @@ def main(args):
     pre_decoder.eval()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=10, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=10)
 
     num_epochs = 4000
     best_train_loss = float('inf')
@@ -260,7 +260,7 @@ def main(args):
 
         curr_count = 0
 
-        for batch_num, batch_cat in pbar:
+        for batch_num, batch_cat, batch_y in pbar:
             model.train()
             optimizer.zero_grad()
 
@@ -275,9 +275,17 @@ def main(args):
 
             # loss = loss_mse + loss_ce + beta * loss_kld
 
+            # ====== THE FIX: FLATTEN THE LATENT TENSORS ======
+            # mu_z is shape [batch_size, num_columns, d_token]
+            # We flatten it to [batch_size, num_columns * d_token]
+            batch_size = mu_z.shape[0]
+            flat_mu_z = mu_z.view(batch_size, -1)
+            flat_std_z = std_z.view(batch_size, -1)
+            # =================================================
+
             # Sample z using the reparameterization trick (already happening inside model, but we need z for MMD)
-            eps = torch.randn_like(std_z)
-            z_sampled = mu_z + eps * torch.exp(0.5 * std_z)
+            eps = torch.randn_like(flat_std_z)
+            z_sampled = flat_mu_z + eps * torch.exp(0.5 * flat_std_z)
 
             # Sample prior from standard normal
             z_prior = torch.randn_like(z_sampled)
@@ -286,7 +294,7 @@ def main(args):
             loss_mmd = mmd_loss(z_sampled, z_prior)
             
             # Calculate Ordinal Triplet Loss
-            loss_triplet = ordinal_triplet_loss(mu_z, batch_y, m_close=1.0, m_far=2.5)
+            loss_triplet = ordinal_triplet_loss(flat_mu_z, batch_y, m_close=1.0, m_far=2.5)
 
             # The New Hybrid Objective
             alpha = 1.0 # Triplet weight
@@ -324,14 +332,22 @@ def main(args):
             val_mse_loss, val_ce_loss, val_acc = compute_loss(X_test_num, X_test_cat, Recon_X_num, Recon_X_cat)
             # val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()   
 
+            # ====== THE FIX: FLATTEN THE LATENT TENSORS ======
+            # mu_z is shape [batch_size, num_columns, d_token]
+            # We flatten it to [batch_size, num_columns * d_token]
+            batch_size = mu_z.shape[0]
+            flat_mu_z = mu_z.view(batch_size, -1)
+            flat_std_z = std_z.view(batch_size, -1)
+            # =================================================
+
             # 1. Calculate Validation MMD
-            eps = torch.randn_like(std_z)
-            val_z_sampled = mu_z + eps * torch.exp(0.5 * std_z)
+            eps = torch.randn_like(flat_std_z)
+            val_z_sampled = flat_mu_z + eps * torch.exp(0.5 * flat_std_z)
             val_z_prior = torch.randn_like(val_z_sampled)
             val_mmd_loss = mmd_loss(val_z_sampled, val_z_prior)
             
             # 2. Calculate Validation Triplet Loss
-            val_triplet_loss = ordinal_triplet_loss(mu_z, y_test, m_close=1.0, m_far=2.5)
+            val_triplet_loss = ordinal_triplet_loss(flat_mu_z, y_test, m_close=1.0, m_far=2.5)
 
             # 3. Validation Objective
             val_loss = val_mse_loss.item() + val_ce_loss.item() + beta * val_mmd_loss.item() + alpha * val_triplet_loss.item() 
@@ -405,9 +421,12 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=1.0, help='Static weight for the Ordinal Triplet loss.')
 
     args = parser.parse_args()
-
+    
     # check cuda
     if args.gpu != -1 and torch.cuda.is_available():
         args.device = 'cuda:{}'.format(args.gpu)
     else:
         args.device = 'cpu'
+    
+    # ADD THIS EXACT LINE TO ACTUALLY START THE TRAINING
+    main(args)
